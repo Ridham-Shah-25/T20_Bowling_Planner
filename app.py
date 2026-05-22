@@ -24,8 +24,6 @@ import html
 from collections import Counter
 from groq import Groq
 from huggingface_hub import hf_hub_download
-from dotenv import load_dotenv
-load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
