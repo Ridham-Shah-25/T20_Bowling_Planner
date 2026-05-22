@@ -255,6 +255,13 @@ def load_huggingface_data(repo_id: str, filename: str, token: str) -> pd.DataFra
     return prepare_data(df)
 
 
+@st.cache_data(show_spinner="Loading ball-by-ball data and batter profiles...")
+def load_app_data(repo_id: str, filename: str, token: str) -> tuple[pd.DataFrame, dict]:
+    df = load_huggingface_data(repo_id, filename, token)
+    profiles = build_batter_profiles(df)
+    return df, profiles
+
+
 def clear_plan_state():
     for key in ["plan", "narration", "plan_batter", "plan_ctx", "similar_info", "plan_signature"]:
         st.session_state.pop(key, None)
@@ -2907,14 +2914,14 @@ def main():
         "df" not in st.session_state
         or st.session_state.get("dataset_signature") != dataset_signature
     ):
-        df = load_huggingface_data(
+        df, profiles = load_app_data(
             st.secrets["HF_REPO_ID"],
             st.secrets["HF_FILENAME"],
             st.secrets["HF_TOKEN"],
         )
         st.session_state["df"] = df
         st.session_state["dataset_signature"] = dataset_signature
-        st.session_state["profiles"] = build_batter_profiles(df)
+        st.session_state["profiles"] = profiles
 
     df = st.session_state["df"]
     with st.expander("Dataset loaded", expanded=False):
