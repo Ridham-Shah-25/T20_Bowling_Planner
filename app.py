@@ -330,7 +330,15 @@ def load_batter_profiles(repo_id: str, filename: str, token: str) -> dict:
 
 
 def clear_plan_state():
-    for key in ["plan", "narration", "plan_batter", "plan_ctx", "similar_info", "plan_signature"]:
+    for key in [
+        "plan",
+        "narration",
+        "plan_batter",
+        "plan_ctx",
+        "similar_info",
+        "similar_note",
+        "plan_signature",
+    ]:
         st.session_state.pop(key, None)
 
 
@@ -2598,6 +2606,11 @@ def render_similar_batsmen(similar_info: list):
     </div>""", unsafe_allow_html=True)
 
 
+def render_similar_batter_note(note: str):
+    if note:
+        st.info(note)
+
+
 def render_plan_summary(plan: dict):
     balls = plan.get("balls", [])
     if not balls:
@@ -2764,8 +2777,14 @@ def render_glossary():
         """)
 
 
-def render_plan(plan: dict, narration: dict, batter: str, context_tag: str,
-                similar_info: list | None = None):
+def render_plan(
+    plan: dict,
+    narration: dict,
+    batter: str,
+    context_tag: str,
+    similar_info: list | None = None,
+    similar_note: str = "",
+):
     st.markdown(f"""
     <div class="hdr">
       <div class="bname">vs {batter}</div>
@@ -2793,6 +2812,8 @@ def render_plan(plan: dict, narration: dict, batter: str, context_tag: str,
     # Show similar batsmen info if used
     if similar_info:
         render_similar_batsmen(similar_info)
+    elif similar_note:
+        render_similar_batter_note(similar_note)
 
     intent_cls = {
         "Wicket ball": "t-wicket",
@@ -3185,6 +3206,7 @@ def main():
     # ── Similar batsmen fallback when data is thin ────────────────────────────
     similar_batsmen_used = []
     similar_prior_dfs = []
+    similar_batsmen_note = ""
     if len(df_use) < MIN_SIMILAR_THRESH:
         if profiles is None:
             profiles = load_batter_profiles(
@@ -3193,6 +3215,22 @@ def main():
                 st.secrets["HF_TOKEN"],
             )
             st.session_state["profiles"] = profiles
+        if profiles is not None and batter not in profiles:
+            target_profile_balls = len(
+                df_bat[
+                    ~df_bat.get(
+                        "isWide",
+                        pd.Series(["false"] * len(df_bat), index=df_bat.index),
+                    ).isin(["true", "1"])
+                ]
+            )
+            similar_batsmen_note = (
+                "Similar batter supplement was attempted because this context has "
+                f"only {len(df_use)} balls, but it was not used because {batter} "
+                f"has only {target_profile_balls} eligible profile balls. The app "
+                f"requires at least {MIN_PROFILE_BALLS} balls to build a reliable "
+                "delivery-vulnerability profile for similarity matching."
+            )
 
     if len(df_use) < MIN_SIMILAR_THRESH and profiles:
         similar = find_similar_batsmen(
@@ -3229,6 +3267,18 @@ def main():
                         [delivery_prior_df] + similar_prior_dfs,
                         ignore_index=True,
                     )
+            elif not similar_batsmen_note:
+                similar_batsmen_note = (
+                    "Similar batter profiles were found, but none had enough "
+                    "usable balls in this bowler type/arm context to supplement "
+                    "the table."
+                )
+        elif not similar_batsmen_note:
+            similar_batsmen_note = (
+                "Similar batter supplement was attempted because this context has "
+                f"only {len(df_use)} balls, but no reliable statistical match was "
+                "available from the delivery-vulnerability profiles."
+            )
 
     # ── Bowler matchup filter ─────────────────────────────────────────────────
     df_matchup = pd.DataFrame()
@@ -3385,6 +3435,8 @@ def main():
         # Show similar batsmen details if used
         if similar_batsmen_used:
             render_similar_batsmen(similar_batsmen_used)
+        elif similar_batsmen_note:
+            render_similar_batter_note(similar_batsmen_note)
 
         st.markdown(
             f"**Composite delivery table** *(sorted by {intent} score)*  "
@@ -3553,6 +3605,7 @@ def main():
                 st.session_state["plan_batter"] = batter
                 st.session_state["plan_ctx"]    = context_tag
                 st.session_state["similar_info"] = similar_batsmen_used
+                st.session_state["similar_note"] = similar_batsmen_note
                 st.session_state["plan_signature"] = current_plan_signature
 
     # ── Render ────────────────────────────────────────────────────────────────
@@ -3564,6 +3617,7 @@ def main():
             st.session_state["plan_batter"],
             st.session_state["plan_ctx"],
             st.session_state.get("similar_info", []),
+            st.session_state.get("similar_note", ""),
         )
     render_glossary()
 
