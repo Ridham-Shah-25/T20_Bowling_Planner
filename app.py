@@ -24,6 +24,7 @@ import html
 from collections import Counter
 from groq import Groq
 from huggingface_hub import hf_hub_download
+import pyarrow.parquet as pq
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -128,6 +129,47 @@ DATA_WEIGHT_COL = "_data_weight"
 # larger, more reliable sample sizes.
 DELIVERY_COLS = ["lengthTypeId", "lineTypeId", "bowlingFromId"]
 
+REQUIRED_DATA_COLUMNS = [
+    "battingPlayer",
+    "bowlingPlayer",
+    "bowlingTypeId",
+    "bowlingHandId",
+    "bowlingDetailId",
+    "lengthTypeId",
+    "lineTypeId",
+    "bowlingFromId",
+    "overNumber",
+    "ballNumber",
+    "batruns",
+    "isWicket",
+    "bat_out",
+    "isWide",
+    "isNoBall",
+    "inningNumber",
+    "fixtureId",
+    "ground",
+    "year",
+    "fieldingPosition",
+]
+
+CATEGORY_DATA_COLUMNS = [
+    "battingPlayer",
+    "bowlingPlayer",
+    "bowlingTypeId",
+    "bowlingHandId",
+    "bowlingDetailId",
+    "lengthTypeId",
+    "lineTypeId",
+    "bowlingFromId",
+    "isWicket",
+    "bat_out",
+    "isWide",
+    "isNoBall",
+    "inningNumber",
+    "ground",
+    "fieldingPosition",
+]
+
 def filter_by_bowler_type_hand(df: pd.DataFrame,
                                 bowler_type: str,
                                 bowler_hand: str) -> pd.DataFrame:
@@ -226,7 +268,8 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["isWicket", "bat_out", "isWide", "isNoBall"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip().str.lower()
-    df["inningNumber"] = df["inningNumber"].astype(str).str.strip()
+    if "inningNumber" in df.columns:
+        df["inningNumber"] = df["inningNumber"].astype(str).str.strip()
     for c in DELIVERY_COLS:
         if c in df.columns:
             df[c] = df[c].fillna("Unknown").astype(str).str.strip()
@@ -234,6 +277,13 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     if "ballNumber" in df.columns:
         df["ballNumber"] = pd.to_numeric(df["ballNumber"], errors="coerce").fillna(0)
     df = add_recency_weights(df)
+    return df
+
+
+def optimize_loaded_data(df: pd.DataFrame) -> pd.DataFrame:
+    for c in CATEGORY_DATA_COLUMNS:
+        if c in df.columns:
+            df[c] = df[c].astype("category")
     return df
 
 
@@ -254,15 +304,23 @@ def load_huggingface_data(repo_id: str, filename: str, token: str) -> pd.DataFra
 
     filename_lower = filename.lower()
     if filename_lower.endswith((".parquet", ".pq")):
-        df = pd.read_parquet(local_path)
+        available_cols = set(pq.read_schema(local_path).names)
+        use_cols = [c for c in REQUIRED_DATA_COLUMNS if c in available_cols]
+        if not use_cols:
+            raise ValueError("No app-required columns found in the Parquet dataset.")
+        df = pd.read_parquet(local_path, columns=use_cols)
     elif filename_lower.endswith(".csv"):
-        df = pd.read_csv(local_path, low_memory=False)
+        df = pd.read_csv(
+            local_path,
+            low_memory=False,
+            usecols=lambda c: c in REQUIRED_DATA_COLUMNS,
+        )
     else:
         raise ValueError(
             "Unsupported dataset file type. Use a .parquet or .csv file."
         )
 
-    return prepare_data(df)
+    return optimize_loaded_data(prepare_data(df))
 
 
 @st.cache_data(show_spinner="Building similar-batter profiles...")
@@ -373,7 +431,7 @@ def build_batter_profiles(df_all: pd.DataFrame) -> dict:
 
     legal["phase"] = legal["overNumber"].apply(phase_of)
 
-    for batter, g_valid in legal.groupby("battingPlayer"):
+    for batter, g_valid in legal.groupby("battingPlayer", observed=True):
         actual_balls = len(g_valid)
         if actual_balls < MIN_PROFILE_BALLS:
             continue
@@ -419,7 +477,7 @@ def build_batter_profiles(df_all: pd.DataFrame) -> dict:
             g_features[c] = g_features[c].fillna("Unknown").astype(str).str.strip()
             g_features.loc[g_features[c].isin(["", "nan", "None"]), c] = "Unknown"
 
-        for key, dg in g_features.groupby(group_cols):
+        for key, dg in g_features.groupby(group_cols, observed=True):
             actual_group_balls = len(dg)
             if actual_group_balls < MIN_VULNERABILITY_GROUP_BALLS:
                 continue
@@ -601,7 +659,7 @@ def mine_wicket_sequences(df: pd.DataFrame) -> list:
         nums = [float(r.get("ballNumber", 0)) for r in rows]
         return all((nums[j] - nums[j - 1]) == 1 for j in range(1, len(nums)))
 
-    for _, over_df in legal.groupby(group_cols):
+    for _, over_df in legal.groupby(group_cols, observed=True):
         over_df = over_df.sort_values("ballNumber")
         balls = over_df.to_dict("records")
         phase = phase_of(float(over_df["overNumber"].iloc[0]))
@@ -738,7 +796,9 @@ def build_delivery_table(
         prior_cols = [c for c in available_cols if c in prior_source.columns]
 
         if len(prior_cols) == len(available_cols):
-            for pkeys, pg in prior_source.groupby(available_cols, dropna=False):
+            for pkeys, pg in prior_source.groupby(
+                available_cols, dropna=False, observed=True
+            ):
                 if not isinstance(pkeys, tuple):
                     pkeys = (pkeys,)
                 if any(str(k).strip().lower() in ("unknown", "nan", "none", "") for k in pkeys):
@@ -769,7 +829,7 @@ def build_delivery_table(
                 }
 
     records = []
-    for keys, g in df.groupby(available_cols, dropna=False):
+    for keys, g in df.groupby(available_cols, dropna=False, observed=True):
         if not isinstance(keys, tuple):
             keys = (keys,)
         if any(str(k).strip().lower() in ("unknown", "nan", "none", "") for k in keys):
@@ -880,7 +940,7 @@ def build_bowler_execution_table(df_all: pd.DataFrame,
 
     legal_cols = [c for c in DELIVERY_COLS if c in legal_bowler.columns]
     records = []
-    for keys, g in legal_bowler.groupby(legal_cols, dropna=False):
+    for keys, g in legal_bowler.groupby(legal_cols, dropna=False, observed=True):
         if not isinstance(keys, tuple):
             keys = (keys,)
         if any(str(k).strip().lower() in ("unknown", "nan", "none", "") for k in keys):
@@ -1357,7 +1417,7 @@ def recommend_variation(df: pd.DataFrame, length: str, line: str,
     prior_contain_rate = prior_contain / prior_balls
 
     results = []
-    for var, g in sub.groupby("bowlingDetailId"):
+    for var, g in sub.groupby("bowlingDetailId", observed=True):
         var = str(var).strip()
         if var.lower() in ("unknown", "nan", "none", ""):
             continue
