@@ -251,7 +251,17 @@ def load_huggingface_data(repo_id: str, filename: str, token: str) -> pd.DataFra
         repo_type="dataset",
         token=token,
     )
-    df = pd.read_csv(local_path, low_memory=False)
+
+    filename_lower = filename.lower()
+    if filename_lower.endswith((".parquet", ".pq")):
+        df = pd.read_parquet(local_path)
+    elif filename_lower.endswith(".csv"):
+        df = pd.read_csv(local_path, low_memory=False)
+    else:
+        raise ValueError(
+            "Unsupported dataset file type. Use a .parquet or .csv file."
+        )
+
     return prepare_data(df)
 
 
