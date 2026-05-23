@@ -265,11 +265,10 @@ def load_huggingface_data(repo_id: str, filename: str, token: str) -> pd.DataFra
     return prepare_data(df)
 
 
-@st.cache_data(show_spinner="Loading ball-by-ball data and batter profiles...")
-def load_app_data(repo_id: str, filename: str, token: str) -> tuple[pd.DataFrame, dict]:
+@st.cache_data(show_spinner="Building similar-batter profiles...")
+def load_batter_profiles(repo_id: str, filename: str, token: str) -> dict:
     df = load_huggingface_data(repo_id, filename, token)
-    profiles = build_batter_profiles(df)
-    return df, profiles
+    return build_batter_profiles(df)
 
 
 def clear_plan_state():
@@ -2924,14 +2923,14 @@ def main():
         "df" not in st.session_state
         or st.session_state.get("dataset_signature") != dataset_signature
     ):
-        df, profiles = load_app_data(
+        df = load_huggingface_data(
             st.secrets["HF_REPO_ID"],
             st.secrets["HF_FILENAME"],
             st.secrets["HF_TOKEN"],
         )
         st.session_state["df"] = df
         st.session_state["dataset_signature"] = dataset_signature
-        st.session_state["profiles"] = profiles
+        st.session_state["profiles"] = None
 
     df = st.session_state["df"]
     with st.expander("Dataset loaded", expanded=False):
@@ -2959,7 +2958,7 @@ def main():
     render_app_methodology()
     render_ds_methodology()
     render_reliability_rules()
-    profiles = st.session_state.get("profiles", {})
+    profiles = st.session_state.get("profiles")
     batters = sorted(df_all["battingPlayer"].dropna().unique())
 
     st.markdown("---")
@@ -3126,6 +3125,15 @@ def main():
     # ── Similar batsmen fallback when data is thin ────────────────────────────
     similar_batsmen_used = []
     similar_prior_dfs = []
+    if len(df_use) < MIN_SIMILAR_THRESH:
+        if profiles is None:
+            profiles = load_batter_profiles(
+                st.secrets["HF_REPO_ID"],
+                st.secrets["HF_FILENAME"],
+                st.secrets["HF_TOKEN"],
+            )
+            st.session_state["profiles"] = profiles
+
     if len(df_use) < MIN_SIMILAR_THRESH and profiles:
         similar = find_similar_batsmen(
             batter,
